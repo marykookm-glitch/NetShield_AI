@@ -5,14 +5,17 @@ import time
 import random
 import io
 import base64
+import os
 from datetime import datetime
 
+# Optional AI
 try:
     from sklearn.ensemble import IsolationForest
     AI_AVAILABLE = True
 except Exception:
     AI_AVAILABLE = False
 
+# Optional QR
 try:
     import qrcode
     QR_AVAILABLE = True
@@ -22,9 +25,9 @@ except Exception:
 
 app = Flask(__name__)
 
+
 # =========================================================
-# NETSHIELD AI
-# AI-Powered Real-Time Network Intelligence
+# DATA
 # =========================================================
 
 devices = [
@@ -55,7 +58,6 @@ devices = [
 ]
 
 threats = []
-
 history = []
 
 previous_net = psutil.net_io_counters()
@@ -63,168 +65,179 @@ previous_time = time.time()
 
 simulation_mode = False
 
+# AI model
+ai_model = None
+
 
 # =========================================================
 # HELPER FUNCTIONS
 # =========================================================
 
 def get_local_ip():
+    """Get the local IP address of this computer."""
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-
-        if ip.startswith("127."):
-            return "127.0.0.1"
-
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
         return ip
-
     except Exception:
         return "127.0.0.1"
 
 
-def get_network_data():
+def initialize_ai():
+    """Create a simple Isolation Forest model."""
+    global ai_model
 
+    if not AI_AVAILABLE:
+        return
+
+    try:
+        normal_data = []
+
+        for _ in range(150):
+            mbps = random.uniform(0.5, 8.0)
+            packets = random.uniform(20, 250)
+            normal_data.append([mbps, packets])
+
+        ai_model = IsolationForest(
+            contamination=0.08,
+            random_state=42
+        )
+
+        ai_model.fit(normal_data)
+
+    except Exception:
+        ai_model = None
+
+
+def get_network_data():
+    """Collect current network activity."""
     global previous_net
     global previous_time
 
-    current_net = psutil.net_io_counters()
-    current_time = time.time()
-
-    time_diff = current_time - previous_time
-
-    if time_diff <= 0:
-        time_diff = 1
-
-    sent_delta = current_net.bytes_sent - previous_net.bytes_sent
-    recv_delta = current_net.bytes_recv - previous_net.bytes_recv
-
-    packet_delta = (
-        (current_net.packets_sent - previous_net.packets_sent)
-        +
-        (current_net.packets_recv - previous_net.packets_recv)
-    )
-
-    total_bytes = sent_delta + recv_delta
-
-    mbps = (total_bytes * 8) / time_diff / 1_000_000
-
-    packets_per_second = packet_delta / time_diff
-
-    previous_net = current_net
-    previous_time = current_time
-
-    connections = 0
-
     try:
-        connections = len(psutil.net_connections(kind="inet"))
+        current_net = psutil.net_io_counters()
+        current_time = time.time()
+
+        time_diff = max(current_time - previous_time, 0.1)
+
+        bytes_sent = max(
+            current_net.bytes_sent - previous_net.bytes_sent,
+            0
+        )
+
+        bytes_recv = max(
+            current_net.bytes_recv - previous_net.bytes_recv,
+            0
+        )
+
+        packets_sent = max(
+            current_net.packets_sent - previous_net.packets_sent,
+            0
+        )
+
+        packets_recv = max(
+            current_net.packets_recv - previous_net.packets_recv,
+            0
+        )
+
+        total_bytes = bytes_sent + bytes_recv
+        total_packets = packets_sent + packets_recv
+
+        mbps = (total_bytes * 8) / time_diff / 1_000_000
+        packets_per_sec = total_packets / time_diff
+
+        # Safe demo simulation
+        if simulation_mode:
+            mbps += random.uniform(8, 25)
+            packets_per_sec += random.uniform(150, 600)
+
+        try:
+            connections = len(psutil.net_connections())
+        except Exception:
+            connections = 0
+
+        previous_net = current_net
+        previous_time = current_time
+
+        return {
+            "mbps": round(mbps, 2),
+            "packets": round(packets_per_sec, 2),
+            "connections": connections
+        }
+
     except Exception:
-        connections = random.randint(8, 25)
-
-    if simulation_mode:
-        mbps += random.uniform(15, 45)
-        packets_per_second += random.uniform(100, 500)
-        connections += random.randint(10, 30)
-
-    return {
-        "mbps": round(mbps, 2),
-        "packets": round(packets_per_second, 2),
-        "connections": connections,
-        "sent": current_net.bytes_sent,
-        "received": current_net.bytes_recv
-    }
+        return {
+            "mbps": 0,
+            "packets": 0,
+            "connections": 0
+        }
 
 
 def calculate_ai_risk(data):
+    """Calculate network risk using AI or fallback rules."""
+    mbps = float(data.get("mbps", 0))
+    packets = float(data.get("packets", 0))
 
-    mbps = data["mbps"]
-    packets = data["packets"]
+    # Simulation mode gives a higher risk score
+    if simulation_mode:
+        return random.randint(70, 95)
 
-    # Normalized network features
-    feature1 = min(mbps / 100, 10)
-    feature2 = min(packets / 1000, 10)
-
-    if AI_AVAILABLE:
-
+    if ai_model is not None:
         try:
-
-            normal_data = []
-
-            for _ in range(100):
-                normal_data.append([
-                    random.uniform(0.01, 2.5),
-                    random.uniform(1, 150)
-                ])
-
-            model = IsolationForest(
-                contamination=0.08,
-                random_state=42
-            )
-
-            model.fit(normal_data)
-
-            prediction = model.predict([
-                [feature1, feature2]
-            ])[0]
+            prediction = ai_model.predict([[mbps, packets]])[0]
 
             if prediction == -1:
-
-                risk = random.randint(65, 92)
-
+                score = random.randint(65, 92)
             else:
+                score = random.randint(5, 25)
 
-                risk = random.randint(5, 25)
+            return score
 
         except Exception:
+            pass
 
-            risk = min(
-                100,
-                int(feature1 * 10 + feature2 * 3)
-            )
+    # Fallback rule-based risk
+    score = 5
 
-    else:
+    if mbps > 20:
+        score += 25
+    elif mbps > 10:
+        score += 15
 
-        risk = min(
-            100,
-            int(feature1 * 10 + feature2 * 3)
-        )
+    if packets > 700:
+        score += 35
+    elif packets > 400:
+        score += 20
 
-    if simulation_mode:
-        risk = max(risk, random.randint(70, 95))
-
-    return risk
+    return min(score, 95)
 
 
 def get_health(risk):
-
-    if risk < 30:
+    if risk < 25:
         return "Excellent"
-
-    if risk < 55:
+    elif risk < 50:
         return "Good"
-
-    if risk < 75:
+    elif risk < 75:
         return "Warning"
-
-    return "Critical"
+    else:
+        return "Critical"
 
 
 def create_qr():
-
+    """Generate QR code for local network access."""
     if not QR_AVAILABLE:
         return None
 
-    ip = get_local_ip()
-
-    url = f"http://{ip}:5000"
-
     try:
+        ip = get_local_ip()
+        url = f"http://{ip}:5000"
 
         qr = qrcode.QRCode(
             version=1,
             box_size=8,
-            border=3
+            border=4
         )
 
         qr.add_data(url)
@@ -233,12 +246,11 @@ def create_qr():
         image = qr.make_image()
 
         buffer = io.BytesIO()
-
         image.save(buffer, format="PNG")
 
         encoded = base64.b64encode(
             buffer.getvalue()
-        ).decode()
+        ).decode("utf-8")
 
         return {
             "url": url,
@@ -246,7 +258,6 @@ def create_qr():
         }
 
     except Exception:
-
         return None
 
 
@@ -263,98 +274,116 @@ def dashboard():
 
     health = get_health(risk)
 
-    active_threats = len([
-        t for t in threats
-        if t["status"] == "Active"
-    ])
+    online_devices = sum(
+        1 for device in devices
+        if device["status"] == "Online"
+    )
 
-    result = {
-        "network": data,
-        "risk": risk,
-        "health": health,
-        "devices": len(devices),
-        "active_threats": active_threats,
-        "time": datetime.now().strftime("%H:%M:%S")
-    }
+    active_threats = sum(
+        1 for threat in threats
+        if threat["status"] == "Active"
+    )
+
+    timestamp = datetime.now().strftime("%H:%M:%S")
 
     history.append({
-        "time": result["time"],
+        "time": timestamp,
         "mbps": data["mbps"],
+        "packets": data["packets"],
         "risk": risk
     })
 
+    # Keep only latest 30 records
     if len(history) > 30:
         history.pop(0)
 
-    return jsonify(result)
+    return jsonify({
+        "bandwidth": data["mbps"],
+        "packets": data["packets"],
+        "connections": data["connections"],
+        "devices": online_devices,
+        "total_devices": len(devices),
+        "threats": active_threats,
+        "risk": risk,
+        "health": health,
+        "ai_available": AI_AVAILABLE,
+        "simulation": simulation_mode,
+        "time": timestamp
+    })
 
+
+# =========================================================
+# API - HISTORY
+# =========================================================
 
 @app.route("/api/history")
 def get_history():
-
     return jsonify(history)
 
 
 # =========================================================
-# DEVICE MANAGEMENT
+# API - DEVICES
 # =========================================================
 
 @app.route("/api/devices")
 def get_devices():
-
     return jsonify(devices)
 
 
 @app.route("/api/devices/add", methods=["POST"])
 def add_device():
 
-    data = request.json
+    data = request.get_json(silent=True) or {}
+
+    name = str(data.get("name", "")).strip()
+    ip = str(data.get("ip", "")).strip()
+    device_type = str(data.get("type", "Computer")).strip()
+
+    if not name or not ip:
+        return jsonify({
+            "success": False,
+            "message": "Name and IP address are required."
+        }), 400
 
     new_id = max(
-        [d["id"] for d in devices],
+        [device["id"] for device in devices],
         default=0
     ) + 1
 
-    device = {
+    new_device = {
         "id": new_id,
-        "name": data.get("name", "Unknown Device"),
-        "ip": data.get("ip", "0.0.0.0"),
-        "type": data.get("type", "Computer"),
+        "name": name,
+        "ip": ip,
+        "type": device_type,
         "status": "Online",
         "risk": random.randint(5, 25)
     }
 
-    devices.append(device)
+    devices.append(new_device)
 
     return jsonify({
         "success": True,
-        "device": device
+        "device": new_device
     })
 
 
 @app.route("/api/devices/edit/<int:device_id>", methods=["PUT"])
 def edit_device(device_id):
 
-    data = request.json
+    data = request.get_json(silent=True) or {}
 
     for device in devices:
 
         if device["id"] == device_id:
 
-            device["name"] = data.get(
-                "name",
-                device["name"]
-            )
+            if "name" in data:
+                device["name"] = str(data["name"]).strip()
 
-            device["ip"] = data.get(
-                "ip",
-                device["ip"]
-            )
+            if "ip" in data:
+                device["ip"] = str(data["ip"]).strip()
 
-            device["type"] = data.get(
-                "type",
-                device["type"]
-            )
+            if "type" in data:
+                device["type"] = str(data["type"]).strip()
 
             return jsonify({
                 "success": True,
@@ -363,8 +392,8 @@ def edit_device(device_id):
 
     return jsonify({
         "success": False,
-        "message": "Device not found"
-    })
+        "message": "Device not found."
+    }), 404
 
 
 @app.route("/api/devices/delete/<int:device_id>", methods=["DELETE"])
@@ -372,10 +401,19 @@ def delete_device(device_id):
 
     global devices
 
+    original_length = len(devices)
+
     devices = [
-        d for d in devices
-        if d["id"] != device_id
+        device
+        for device in devices
+        if device["id"] != device_id
     ]
+
+    if len(devices) == original_length:
+        return jsonify({
+            "success": False,
+            "message": "Device not found."
+        }), 404
 
     return jsonify({
         "success": True
@@ -383,7 +421,7 @@ def delete_device(device_id):
 
 
 # =========================================================
-# THREAT CENTER
+# API - THREAT SIMULATION
 # =========================================================
 
 @app.route("/api/simulate_threat", methods=["POST"])
@@ -393,25 +431,32 @@ def simulate_threat():
 
     simulation_mode = True
 
-    threat_id = len(threats) + 1
+    threat_id = max(
+        [threat["id"] for threat in threats],
+        default=0
+    ) + 1
 
-    threat = {
+    threat_types = [
+        "Abnormal Traffic",
+        "Packet Flood",
+        "Suspicious Network Activity",
+        "Unusual Bandwidth Spike"
+    ]
+
+    severities = [
+        "Medium",
+        "High",
+        "Critical"
+    ]
+
+    new_threat = {
         "id": threat_id,
-        "type": random.choice([
-            "Abnormal Traffic",
-            "Suspicious Activity",
-            "Bandwidth Spike",
-            "Unknown Device Behavior"
-        ]),
-        "severity": random.choice([
-            "Medium",
-            "High",
-            "Critical"
-        ]),
+        "type": random.choice(threat_types),
+        "severity": random.choice(severities),
         "source": random.choice([
             "192.168.1.25",
-            "192.168.1.30",
-            "192.168.1.45"
+            "192.168.1.45",
+            "192.168.1.77"
         ]),
         "time": datetime.now().strftime(
             "%Y-%m-%d %H:%M:%S"
@@ -419,22 +464,23 @@ def simulate_threat():
         "status": "Active"
     }
 
-    threats.insert(0, threat)
+    threats.append(new_threat)
 
     return jsonify({
         "success": True,
-        "threat": threat
+        "threat": new_threat
     })
 
 
 @app.route("/api/threats")
 def get_threats():
-
     return jsonify(threats)
 
 
 @app.route("/api/threats/resolve/<int:threat_id>", methods=["POST"])
 def resolve_threat(threat_id):
+
+    global simulation_mode
 
     for threat in threats:
 
@@ -442,86 +488,102 @@ def resolve_threat(threat_id):
 
             threat["status"] = "Resolved"
 
+            active_count = sum(
+                1 for item in threats
+                if item["status"] == "Active"
+            )
+
+            if active_count == 0:
+                simulation_mode = False
+
             return jsonify({
-                "success": True
+                "success": True,
+                "threat": threat
             })
 
     return jsonify({
-        "success": False
-    })
+        "success": False,
+        "message": "Threat not found."
+    }), 404
 
 
 # =========================================================
-# AI ASSISTANT
+# API - AI ASSISTANT
 # =========================================================
 
 @app.route("/api/assistant", methods=["POST"])
 def assistant():
 
-    data = request.json
+    data = request.get_json(silent=True) or {}
 
-    question = data.get(
-        "question",
-        ""
-    ).lower()
+    question = str(
+        data.get("question", "")
+    ).strip().lower()
 
-    network = get_network_data()
+    current_data = get_network_data()
 
-    risk = calculate_ai_risk(network)
+    risk = calculate_ai_risk(current_data)
 
-    if "slow" in question:
+    active_threats = sum(
+        1 for threat in threats
+        if threat["status"] == "Active"
+    )
 
+    if not question:
+        answer = "Please enter a question."
+
+    elif "health" in question:
         answer = (
-            f"AI Analysis: Current network speed is "
-            f"{network['mbps']} Mbps. "
-            f"Check active connections and bandwidth-heavy devices."
+            f"Current network health is "
+            f"{get_health(risk)} with an AI risk score of {risk}%."
         )
 
     elif "threat" in question:
-
         answer = (
-            f"AI Analysis: There are "
-            f"{len(threats)} detected threat records. "
-            f"Current AI risk score is {risk}/100."
+            f"There are {active_threats} active threat(s). "
+            f"The current AI risk score is {risk}%."
         )
 
     elif "device" in question:
-
         answer = (
-            f"Network currently contains "
-            f"{len(devices)} managed devices."
-        )
-
-    elif "health" in question:
-
-        answer = (
-            f"Network health is currently "
-            f"{get_health(risk)} with an AI risk score "
-            f"of {risk}/100."
+            f"The system currently monitors "
+            f"{len(devices)} device(s)."
         )
 
     elif "bandwidth" in question:
-
         answer = (
-            f"Current bandwidth activity is "
-            f"{network['mbps']} Mbps."
+            f"Current network bandwidth is "
+            f"{current_data['mbps']} Mbps."
+        )
+
+    elif "packet" in question:
+        answer = (
+            f"Current packet rate is "
+            f"{current_data['packets']} packets/sec."
         )
 
     elif "report" in question:
-
         answer = (
-            f"Report summary: {len(devices)} devices, "
-            f"{len(threats)} threats and current risk "
-            f"{risk}/100."
+            "You can open the Reports section to view "
+            "the latest network monitoring summary."
         )
 
-    else:
+    elif "ai" in question:
+        if AI_AVAILABLE:
+            answer = (
+                "AI monitoring is active using an "
+                "Isolation Forest anomaly detection model."
+            )
+        else:
+            answer = (
+                "AI library is unavailable, so the system "
+                "is currently using fallback rule-based detection."
+            )
 
+    else:
         answer = (
-            "I can analyze network health, bandwidth, "
-            "devices, threats and risk. "
-            "Try asking: 'network health', "
-            "'any threats?', or 'show bandwidth'."
+            "I can help with network health, bandwidth, "
+            "packets, devices, threats, AI status and reports."
         )
 
     return jsonify({
@@ -530,789 +592,641 @@ def assistant():
 
 
 # =========================================================
-# QR ACCESS
+# API - QR
 # =========================================================
 
 @app.route("/api/qr")
-def qr_access():
+def qr_api():
 
-    qr = create_qr()
+    qr_data = create_qr()
 
-    if qr is None:
-
+    if qr_data is None:
         return jsonify({
             "success": False,
-            "message": "QR package unavailable"
+            "message": "QR generation is unavailable."
         })
 
     return jsonify({
         "success": True,
-        "url": qr["url"],
-        "image": qr["image"]
+        "url": qr_data["url"],
+        "image": qr_data["image"]
     })
 
 
 # =========================================================
-# REPORT
+# API - REPORT
 # =========================================================
 
 @app.route("/api/report")
 def report():
 
-    network = get_network_data()
+    data = get_network_data()
 
-    risk = calculate_ai_risk(network)
+    risk = calculate_ai_risk(data)
+
+    active_threats = sum(
+        1 for threat in threats
+        if threat["status"] == "Active"
+    )
+
+    online_devices = sum(
+        1 for device in devices
+        if device["status"] == "Online"
+    )
 
     return jsonify({
-        "generated_at":
-            datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),
-        "devices":
-            len(devices),
-        "threats":
-            len(threats),
-        "active_threats":
-            len([
-                t for t in threats
-                if t["status"] == "Active"
-            ]),
-        "network_speed":
-            network["mbps"],
-        "packets_per_second":
-            network["packets"],
-        "connections":
-            network["connections"],
-        "risk":
-            risk,
-        "health":
-            get_health(risk)
+        "generated_at": datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "bandwidth": data["mbps"],
+        "packets": data["packets"],
+        "connections": data["connections"],
+        "devices": len(devices),
+        "online_devices": online_devices,
+        "active_threats": active_threats,
+        "risk": risk,
+        "health": get_health(risk),
+        "ai_status": (
+            "Available"
+            if AI_AVAILABLE
+            else "Fallback Mode"
+        )
     })
 
 
 # =========================================================
-# MAIN HTML
+# MAIN PAGE
 # =========================================================
 
-HTML = r"""
+HTML = """
 <!DOCTYPE html>
-
-<html>
+<html lang="en">
 
 <head>
 
-<meta charset="UTF-8">
-
-<meta name="viewport"
-content="width=device-width, initial-scale=1.0">
-
-<title>NetShield AI</title>
-
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
-<link rel="preconnect"
-href="https://fonts.googleapis.com">
-
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Poppins:wght@400;500;600;700&display=swap"
-rel="stylesheet">
-
-<style>
-
-*{
-    box-sizing:border-box;
-    margin:0;
-    padding:0;
-}
-
-body{
-
-    font-family:Poppins,sans-serif;
-
-    background:
-    radial-gradient(
-        circle at top right,
-        #1d1740,
-        #070914 45%,
-        #04050a
-    );
-
-    color:#f4f7ff;
-
-    min-height:100vh;
-}
-
-.sidebar{
-
-    position:fixed;
-
-    left:0;
-    top:0;
-
-    width:240px;
-    height:100vh;
-
-    background:rgba(10,12,25,.95);
-
-    border-right:1px solid rgba(120,90,255,.25);
-
-    padding:25px 15px;
-
-    z-index:10;
-}
-
-.logo{
-
-    font-size:23px;
-
-    font-weight:700;
-
-    margin-bottom:35px;
-
-    padding-left:10px;
-
-    color:#9d8cff;
-}
-
-.logo span{
-
-    color:#25e6ff;
-}
-
-.nav button{
-
-    width:100%;
-
-    background:transparent;
-
-    border:0;
-
-    color:#9da4bd;
-
-    padding:14px;
-
-    margin:4px 0;
-
-    border-radius:12px;
-
-    text-align:left;
-
-    font-size:14px;
-
-    cursor:pointer;
-
-    transition:.25s;
-}
-
-.nav button:hover,
-.nav button.active{
-
-    background:linear-gradient(
-        90deg,
-        rgba(111,75,255,.35),
-        rgba(32,217,255,.08)
-    );
-
-    color:white;
-
-    box-shadow:
-    0 0 20px rgba(120,80,255,.15);
-}
-
-.main{
-
-    margin-left:240px;
-
-    padding:25px;
-
-}
-
-.topbar{
-
-    display:flex;
-
-    justify-content:space-between;
-
-    align-items:center;
-
-    margin-bottom:25px;
-}
-
-.title h1{
-
-    font-size:27px;
-}
-
-.title p{
-
-    color:#858da8;
-
-    font-size:13px;
-
-    margin-top:5px;
-}
-
-.live{
-
-    display:flex;
-
-    align-items:center;
-
-    gap:8px;
-
-    font-size:12px;
-
-    color:#6df7ae;
-}
-
-.dot{
-
-    width:9px;
-    height:9px;
-
-    border-radius:50%;
-
-    background:#39f58c;
-
-    box-shadow:0 0 12px #39f58c;
-}
-
-.cards{
-
-    display:grid;
-
-    grid-template-columns:
-    repeat(5,1fr);
-
-    gap:15px;
-
-    margin-bottom:20px;
-}
-
-.card{
-
-    background:rgba(16,19,38,.78);
-
-    border:1px solid
-    rgba(130,110,255,.16);
-
-    border-radius:18px;
-
-    padding:20px;
-
-    backdrop-filter:blur(12px);
-
-    transition:.25s;
-}
-
-.card:hover{
-
-    transform:translateY(-3px);
-
-    border-color:
-    rgba(127,107,255,.5);
-
-    box-shadow:
-    0 10px 35px rgba(0,0,0,.3);
-}
-
-.card-label{
-
-    font-size:12px;
-
-    color:#8c94ad;
-
-    margin-bottom:9px;
-}
-
-.card-value{
-
-    font-size:25px;
-
-    font-weight:700;
-}
-
-.blue{
-    color:#38dfff;
-}
-
-.purple{
-    color:#a78bfa;
-}
-
-.green{
-    color:#5cf3a1;
-}
-
-.red{
-    color:#ff637c;
-}
-
-.yellow{
-    color:#ffd166;
-}
-
-.grid{
-
-    display:grid;
-
-    grid-template-columns:
-    2fr 1fr;
-
-    gap:18px;
-
-    margin-bottom:20px;
-}
-
-.panel{
-
-    background:rgba(13,17,34,.85);
-
-    border:
-    1px solid rgba(130,110,255,.16);
-
-    border-radius:18px;
-
-    padding:20px;
-}
-
-.panel-head{
-
-    display:flex;
-
-    justify-content:space-between;
-
-    align-items:center;
-
-    margin-bottom:15px;
-}
-
-.panel h2{
-
-    font-size:16px;
-}
-
-.small{
-
-    color:#8089a6;
-
-    font-size:11px;
-}
-
-canvas{
-
-    max-height:300px;
-}
-
-.health{
-
-    text-align:center;
-
-    padding:20px 0;
-}
-
-.health-ring{
-
-    width:150px;
-    height:150px;
-
-    border-radius:50%;
-
-    margin:0 auto 15px;
-
-    display:flex;
-
-    align-items:center;
-
-    justify-content:center;
-
-    background:
-    radial-gradient(
-        circle,
-        #111528 55%,
-        transparent 57%
-    );
-
-    border:8px solid #42efa0;
-
-    box-shadow:
-    0 0 30px rgba(66,239,160,.2);
-}
-
-.health-ring span{
-
-    font-size:27px;
-
-    font-weight:700;
-}
-
-.btn{
-
-    border:0;
-
-    border-radius:10px;
-
-    padding:10px 15px;
-
-    color:white;
-
-    cursor:pointer;
-
-    font-family:Poppins;
-
-    font-size:12px;
-
-    transition:.2s;
-}
-
-.btn:hover{
-
-    transform:translateY(-2px);
-
-}
-
-.btn-primary{
-
-    background:
-    linear-gradient(
-        135deg,
-        #7657ff,
-        #21b9ff
-    );
-
-}
-
-.btn-danger{
-
-    background:
-    linear-gradient(
-        135deg,
-        #ff416c,
-        #ff4b2b
-    );
-
-}
-
-.btn-green{
-
-    background:
-    linear-gradient(
-        135deg,
-        #10b981,
-        #06b6d4
-    );
-
-}
-
-.btn-dark{
-
-    background:#1a1e35;
-
-    border:1px solid #2b3150;
-}
-
-.table-wrap{
-
-    overflow-x:auto;
-}
-
-table{
-
-    width:100%;
-
-    border-collapse:collapse;
-
-    font-size:12px;
-}
-
-th{
-
-    text-align:left;
-
-    color:#707994;
-
-    padding:12px;
-
-    border-bottom:
-    1px solid #242943;
-}
-
-td{
-
-    padding:14px 12px;
-
-    border-bottom:
-    1px solid #181c30;
-}
-
-.badge{
-
-    display:inline-block;
-
-    padding:5px 9px;
-
-    border-radius:20px;
-
-    font-size:10px;
-
-    background:#17223a;
-
-}
-
-.online{
-
-    color:#62f5a6;
-}
-
-.risk-low{
-
-    color:#62f5a6;
-}
-
-.risk-high{
-
-    color:#ff657c;
-}
-
-.action-btn{
-
-    border:0;
-
-    background:#181d35;
-
-    color:#aeb6d0;
-
-    padding:6px 9px;
-
-    border-radius:7px;
-
-    cursor:pointer;
-
-    margin-right:4px;
-}
-
-.action-btn:hover{
-
-    color:white;
-
-}
-
-.search{
-
-    background:#10142a;
-
-    border:1px solid #252b48;
-
-    border-radius:10px;
-
-    padding:10px 12px;
-
-    color:white;
-
-    outline:none;
-
-    width:220px;
-}
-
-.modal{
-
-    position:fixed;
-
-    inset:0;
-
-    background:rgba(0,0,0,.7);
-
-    display:none;
-
-    align-items:center;
-
-    justify-content:center;
-
-    z-index:50;
-}
-
-.modal-box{
-
-    width:420px;
-
-    max-width:90%;
-
-    background:#10142a;
-
-    border:1px solid #333a62;
-
-    border-radius:18px;
-
-    padding:25px;
-}
-
-.modal-box h2{
-
-    margin-bottom:20px;
-}
-
-.input{
-
-    width:100%;
-
-    background:#080b18;
-
-    border:1px solid #2a3151;
-
-    color:white;
-
-    border-radius:9px;
-
-    padding:11px;
-
-    margin-bottom:12px;
-
-    outline:none;
-}
-
-.assistant{
-
-    display:flex;
-
-    gap:10px;
-
-    margin-top:15px;
-}
-
-.assistant input{
-
-    flex:1;
-
-    background:#080b18;
-
-    border:1px solid #292f4c;
-
-    color:white;
-
-    padding:11px;
-
-    border-radius:9px;
-
-    outline:none;
-}
-
-.ai-answer{
-
-    margin-top:15px;
-
-    padding:14px;
-
-    border-radius:10px;
-
-    background:#0a1021;
-
-    border:1px solid #252d4c;
-
-    color:#b9c1d8;
-
-    font-size:12px;
-
-    line-height:1.7;
-}
-
-.qr-box{
-
-    text-align:center;
-
-    padding:10px;
-}
-
-.qr-box img{
-
-    width:220px;
-
-    background:white;
-
-    padding:10px;
-
-    border-radius:12px;
-}
-
-.section{
-
-    display:none;
-}
-
-.section.active{
-
-    display:block;
-}
-
-.alert{
-
-    padding:12px;
-
-    border-radius:10px;
-
-    margin-bottom:8px;
-
-    background:#171b31;
-
-    border-left:3px solid #ff657c;
-}
-
-@media(max-width:1000px){
-
-    .cards{
-
-        grid-template-columns:
-        repeat(2,1fr);
-    }
-
-    .grid{
-
-        grid-template-columns:1fr;
-    }
-
-}
-
-@media(max-width:700px){
-
-    .sidebar{
-
-        width:70px;
-    }
-
-    .logo{
-
-        font-size:0;
-    }
-
-    .logo span{
-
-        font-size:20px;
-    }
-
-    .nav button{
-
-        font-size:0;
-        text-align:center;
-    }
-
-    .nav button::first-letter{
-
-        font-size:18px;
-    }
-
-    .main{
-
-        margin-left:70px;
-
-        padding:15px;
-    }
-
-    .cards{
-
-        grid-template-columns:1fr;
-    }
-
-}
-
-</style>
+    <meta charset="UTF-8">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>NetShield AI</title>
+
+    <link rel="preconnect"
+          href="https://fonts.googleapis.com">
+
+    <link rel="preconnect"
+          href="https://fonts.gstatic.com"
+          crossorigin>
+
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Poppins:wght@400;500;600;700&display=swap"
+          rel="stylesheet">
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+
+    <style>
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Poppins', sans-serif;
+            background:
+                radial-gradient(
+                    circle at top right,
+                    rgba(92, 67, 180, 0.20),
+                    transparent 35%
+                ),
+                #070914;
+            color: #f4f7ff;
+            min-height: 100vh;
+        }
+
+        button,
+        input,
+        select {
+            font-family: inherit;
+        }
+
+        .layout {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 245px;
+            background: rgba(9, 12, 28, 0.96);
+            border-right: 1px solid #202744;
+            padding: 25px 16px;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+        }
+
+        .logo {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 35px;
+            color: #8f7cff;
+        }
+
+        .logo span {
+            color: #42e8a7;
+        }
+
+        .nav-btn {
+            width: 100%;
+            border: 0;
+            background: transparent;
+            color: #8992ad;
+            padding: 13px 14px;
+            margin-bottom: 7px;
+            border-radius: 12px;
+            text-align: left;
+            cursor: pointer;
+            transition: 0.2s;
+            font-size: 14px;
+        }
+
+        .nav-btn:hover,
+        .nav-btn.active {
+            background: rgba(126, 105, 255, 0.15);
+            color: #ffffff;
+        }
+
+        .main {
+            margin-left: 245px;
+            width: calc(100% - 245px);
+            padding: 28px;
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+        }
+
+        .title h1 {
+            font-size: 27px;
+        }
+
+        .title p {
+            color: #7d86a4;
+            margin-top: 4px;
+            font-size: 13px;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(66, 232, 167, 0.08);
+            border: 1px solid rgba(66, 232, 167, 0.25);
+            padding: 9px 13px;
+            border-radius: 20px;
+            font-size: 12px;
+            color: #42e8a7;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #42e8a7;
+            box-shadow: 0 0 12px #42e8a7;
+        }
+
+        .section {
+            display: none;
+        }
+
+        .section.active {
+            display: block;
+        }
+
+        .cards {
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(190px, 1fr));
+            gap: 15px;
+            margin-bottom: 18px;
+        }
+
+        .card {
+            background: rgba(16, 20, 40, 0.92);
+            border: 1px solid #222a49;
+            border-radius: 17px;
+            padding: 19px;
+            box-shadow: 0 10px 35px rgba(0, 0, 0, 0.15);
+        }
+
+        .card-label {
+            color: #7e88a6;
+            font-size: 12px;
+            margin-bottom: 10px;
+        }
+
+        .card-value {
+            font-size: 27px;
+            font-weight: 700;
+        }
+
+        .card-small {
+            color: #727c9b;
+            font-size: 11px;
+            margin-top: 5px;
+        }
+
+        .grid-two {
+            display: grid;
+            grid-template-columns: 1.7fr 1fr;
+            gap: 18px;
+        }
+
+        .panel {
+            background: rgba(16, 20, 40, 0.92);
+            border: 1px solid #222a49;
+            border-radius: 17px;
+            padding: 20px;
+            margin-bottom: 18px;
+        }
+
+        .panel-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 18px;
+        }
+
+        .panel-title h2 {
+            font-size: 16px;
+        }
+
+        .panel-title span {
+            color: #707b9a;
+            font-size: 11px;
+        }
+
+        .chart-box {
+            height: 300px;
+        }
+
+        .health {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 300px;
+            flex-direction: column;
+        }
+
+        .health-ring {
+            width: 155px;
+            height: 155px;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background:
+                conic-gradient(
+                    #42e8a7 0deg,
+                    #42e8a7 180deg,
+                    #26304e 180deg,
+                    #26304e 360deg
+                );
+            position: relative;
+        }
+
+        .health-ring::after {
+            content: "";
+            width: 118px;
+            height: 118px;
+            border-radius: 50%;
+            background: #101428;
+            position: absolute;
+        }
+
+        .health-content {
+            position: relative;
+            z-index: 2;
+            text-align: center;
+        }
+
+        .health-number {
+            font-size: 31px;
+            font-weight: 700;
+        }
+
+        .health-text {
+            color: #42e8a7;
+            font-size: 12px;
+        }
+
+        .actions {
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(190px, 1fr));
+            gap: 12px;
+        }
+
+        .action-btn {
+            border: 1px solid #2b3458;
+            background: #12172d;
+            color: white;
+            padding: 14px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .action-btn:hover {
+            transform: translateY(-2px);
+            border-color: #7d6cff;
+            background: #171d3b;
+        }
+
+        .primary {
+            background: #6e5cf6;
+            border-color: #6e5cf6;
+        }
+
+        .danger {
+            background: #351722;
+            border-color: #7d293b;
+        }
+
+        .table-wrap {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            padding: 13px 10px;
+            border-bottom: 1px solid #222a45;
+            text-align: left;
+            font-size: 13px;
+        }
+
+        th {
+            color: #737e9d;
+            font-weight: 500;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 5px 9px;
+            border-radius: 15px;
+            font-size: 10px;
+        }
+
+        .online {
+            color: #42e8a7;
+            background: rgba(66, 232, 167, 0.1);
+        }
+
+        .high {
+            color: #ff6b7a;
+            background: rgba(255, 107, 122, 0.1);
+        }
+
+        .medium {
+            color: #ffc857;
+            background: rgba(255, 200, 87, 0.1);
+        }
+
+        .resolved {
+            color: #42e8a7;
+            background: rgba(66, 232, 167, 0.1);
+        }
+
+        .small-btn {
+            padding: 7px 10px;
+            border-radius: 8px;
+            border: 1px solid #2b3458;
+            background: #151a31;
+            color: white;
+            cursor: pointer;
+            margin-right: 4px;
+        }
+
+        .small-btn:hover {
+            border-color: #8171ff;
+        }
+
+        .search {
+            width: 100%;
+            background: #0d1124;
+            border: 1px solid #2a3353;
+            color: white;
+            padding: 12px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            outline: none;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .input {
+            width: 100%;
+            background: #0d1124;
+            border: 1px solid #2a3353;
+            color: white;
+            padding: 12px;
+            border-radius: 10px;
+            outline: none;
+            margin-top: 6px;
+        }
+
+        .field {
+            margin-bottom: 14px;
+        }
+
+        .field label {
+            color: #8490b1;
+            font-size: 12px;
+        }
+
+        .assistant-box {
+            max-width: 850px;
+            margin: auto;
+        }
+
+        .chat {
+            min-height: 250px;
+            max-height: 450px;
+            overflow-y: auto;
+            background: #0c1022;
+            border: 1px solid #232c4a;
+            border-radius: 14px;
+            padding: 18px;
+            margin-bottom: 14px;
+        }
+
+        .message {
+            margin-bottom: 13px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            line-height: 1.6;
+            font-size: 13px;
+        }
+
+        .user-message {
+            background: #1c2241;
+        }
+
+        .ai-message {
+            background: #152b2c;
+            border-left: 3px solid #42e8a7;
+        }
+
+        .chat-input {
+            display: flex;
+            gap: 10px;
+        }
+
+        .chat-input input {
+            flex: 1;
+        }
+
+        .report-grid {
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(220px, 1fr));
+            gap: 14px;
+        }
+
+        .report-item {
+            background: #0d1226;
+            border: 1px solid #222a47;
+            border-radius: 13px;
+            padding: 17px;
+        }
+
+        .report-item span {
+            display: block;
+            color: #727c99;
+            font-size: 11px;
+            margin-bottom: 6px;
+        }
+
+        .report-item strong {
+            font-size: 22px;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.72);
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            padding: 20px;
+        }
+
+        .modal-box {
+            width: min(500px, 100%);
+            background: #11162d;
+            border: 1px solid #303a61;
+            border-radius: 17px;
+            padding: 22px;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .close {
+            border: 0;
+            background: transparent;
+            color: #8992ad;
+            font-size: 23px;
+            cursor: pointer;
+        }
+
+        .qr-image {
+            display: block;
+            width: 240px;
+            height: 240px;
+            margin: 15px auto;
+            background: white;
+            padding: 10px;
+            border-radius: 12px;
+        }
+
+        .url-box {
+            background: #090d1d;
+            padding: 12px;
+            border-radius: 10px;
+            text-align: center;
+            word-break: break-all;
+            color: #42e8a7;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+        }
+
+        .footer-note {
+            color: #5f6986;
+            text-align: center;
+            font-size: 11px;
+            margin-top: 25px;
+        }
+
+        @media (max-width: 900px) {
+
+            .sidebar {
+                width: 190px;
+            }
+
+            .main {
+                margin-left: 190px;
+                width: calc(100% - 190px);
+            }
+
+            .grid-two {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 650px) {
+
+            .sidebar {
+                position: static;
+                width: 100%;
+                height: auto;
+            }
+
+            .layout {
+                display: block;
+            }
+
+            .main {
+                margin-left: 0;
+                width: 100%;
+                padding: 16px;
+            }
+
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+    </style>
 
 </head>
 
@@ -1320,1003 +1234,1216 @@ td{
 <body>
 
 
-<div class="sidebar">
+<div class="layout">
 
-    <div class="logo">
-        NETSHIELD <span>AI</span>
-    </div>
+    <!-- SIDEBAR -->
 
-    <div class="nav">
+    <aside class="sidebar">
 
-        <button
-        class="active"
-        onclick="showSection('dashboard',this)">
-        ◈ Dashboard
+        <div class="logo">
+            Net<span>Shield</span> AI
+        </div>
+
+        <button class="nav-btn active"
+                onclick="showSection('dashboard', this)">
+            Dashboard
         </button>
 
-        <button
-        onclick="showSection('devices',this)">
-        ◉ Devices
+        <button class="nav-btn"
+                onclick="showSection('devices', this)">
+            Devices
         </button>
 
-        <button
-        onclick="showSection('threats',this)">
-        ⚠ Threat Center
+        <button class="nav-btn"
+                onclick="showSection('threats', this)">
+            Threat Center
         </button>
 
-        <button
-        onclick="showSection('assistant',this)">
-        ✦ AI Assistant
+        <button class="nav-btn"
+                onclick="showSection('assistant', this)">
+            AI Assistant
         </button>
 
-        <button
-        onclick="showSection('reports',this)">
-        ▣ Reports
+        <button class="nav-btn"
+                onclick="showSection('reports', this)">
+            Reports
         </button>
 
-        <button
-        onclick="showSection('settings',this)">
-        ⚙ Settings
+        <button class="nav-btn"
+                onclick="showSection('settings', this)">
+            Settings
         </button>
 
-    </div>
+    </aside>
+
+
+    <!-- MAIN -->
+
+    <main class="main">
+
+
+        <!-- DASHBOARD -->
+
+        <section id="dashboard"
+                 class="section active">
+
+            <div class="topbar">
+
+                <div class="title">
+
+                    <h1>Network Security Dashboard</h1>
+
+                    <p>
+                        AI-powered real-time monitoring
+                        and threat intelligence
+                    </p>
+
+                </div>
+
+                <div class="status">
+
+                    <span class="dot"></span>
+
+                    Monitoring Active
+
+                </div>
+
+            </div>
+
+
+            <div class="cards">
+
+                <div class="card">
+
+                    <div class="card-label">
+                        BANDWIDTH
+                    </div>
+
+                    <div class="card-value"
+                         id="bandwidth">
+                        0
+                    </div>
+
+                    <div class="card-small">
+                        Mbps
+                    </div>
+
+                </div>
+
+
+                <div class="card">
+
+                    <div class="card-label">
+                        PACKETS / SEC
+                    </div>
+
+                    <div class="card-value"
+                         id="packets">
+                        0
+                    </div>
+
+                    <div class="card-small">
+                        Network packets
+                    </div>
+
+                </div>
+
+
+                <div class="card">
+
+                    <div class="card-label">
+                        DEVICES
+                    </div>
+
+                    <div class="card-value"
+                         id="deviceCount">
+                        0
+                    </div>
+
+                    <div class="card-small">
+                        Online devices
+                    </div>
+
+                </div>
+
+
+                <div class="card">
+
+                    <div class="card-label">
+                        ACTIVE THREATS
+                    </div>
+
+                    <div class="card-value"
+                         id="threatCount">
+                        0
+                    </div>
+
+                    <div class="card-small">
+                        Security alerts
+                    </div>
+
+                </div>
+
+
+                <div class="card">
+
+                    <div class="card-label">
+                        AI RISK
+                    </div>
+
+                    <div class="card-value"
+                         id="risk">
+                        0%
+                    </div>
+
+                    <div class="card-small">
+                        Anomaly risk
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <div class="grid-two">
+
+                <div class="panel">
+
+                    <div class="panel-title">
+
+                        <h2>
+                            Live Network Activity
+                        </h2>
+
+                        <span>
+                            Auto refresh
+                        </span>
+
+                    </div>
+
+                    <div class="chart-box">
+
+                        <canvas id="networkChart"></canvas>
+
+                    </div>
+
+                </div>
+
+
+                <div class="panel">
+
+                    <div class="panel-title">
+
+                        <h2>
+                            Network Health
+                        </h2>
+
+                    </div>
+
+                    <div class="health">
+
+                        <div class="health-ring"
+                             id="healthRing">
+
+                            <div class="health-content">
+
+                                <div class="health-number"
+                                     id="healthNumber">
+                                    0%
+                                </div>
+
+                                <div class="health-text"
+                                     id="healthText">
+                                    Excellent
+                                </div>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <div class="panel">
+
+                <div class="panel-title">
+
+                    <h2>
+                        Quick Actions
+                    </h2>
+
+                </div>
+
+                <div class="actions">
+
+                    <button class="action-btn primary"
+                            onclick="openDeviceModal()">
+                        + Add Device
+                    </button>
+
+                    <button class="action-btn danger"
+                            onclick="simulateThreat()">
+                        Run AI Threat Simulation
+                    </button>
+
+                    <button class="action-btn"
+                            onclick="showQR()">
+                        QR Network Access
+                    </button>
+
+                    <button class="action-btn"
+                            onclick="showSection('reports')">
+                        Generate Report
+                    </button>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- DEVICES -->
+
+        <section id="devices"
+                 class="section">
+
+            <div class="topbar">
+
+                <div class="title">
+
+                    <h1>Network Devices</h1>
+
+                    <p>
+                        Manage connected devices
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <div class="panel">
+
+                <button class="action-btn primary"
+                        onclick="openDeviceModal()"
+                        style="margin-bottom:15px;">
+                    + Add Device
+                </button>
+
+                <input
+                    id="deviceSearch"
+                    class="search"
+                    placeholder="Search device..."
+                    oninput="loadDevices()"
+                >
+
+                <div class="table-wrap">
+
+                    <table>
+
+                        <thead>
+
+                            <tr>
+                                <th>Name</th>
+                                <th>IP Address</th>
+                                <th>Type</th>
+                                <th>Status</th>
+                                <th>Risk</th>
+                                <th>Actions</th>
+                            </tr>
+
+                        </thead>
+
+                        <tbody id="deviceTable">
+                        </tbody>
+
+                    </table>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- THREATS -->
+
+        <section id="threats"
+                 class="section">
+
+            <div class="topbar">
+
+                <div class="title">
+
+                    <h1>Threat Center</h1>
+
+                    <p>
+                        AI-powered anomaly detection
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <div class="panel">
+
+                <button class="action-btn danger"
+                        onclick="simulateThreat()">
+                    Simulate Suspicious Activity
+                </button>
+
+            </div>
+
+
+            <div class="panel">
+
+                <div class="table-wrap">
+
+                    <table>
+
+                        <thead>
+
+                            <tr>
+                                <th>Threat</th>
+                                <th>Severity</th>
+                                <th>Source</th>
+                                <th>Time</th>
+                                <th>Status</th>
+                                <th>Action</th>
+                            </tr>
+
+                        </thead>
+
+                        <tbody id="threatTable">
+                        </tbody>
+
+                    </table>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- AI ASSISTANT -->
+
+        <section id="assistant"
+                 class="section">
+
+            <div class="topbar">
+
+                <div class="title">
+
+                    <h1>AI Security Assistant</h1>
+
+                    <p>
+                        Ask questions about your network
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <div class="assistant-box">
+
+                <div class="panel">
+
+                    <div class="chat"
+                         id="chat">
+
+                        <div class="message ai-message">
+
+                            Hello! I am NetShield AI.
+                            Ask me about network health,
+                            bandwidth, packets, devices,
+                            threats or reports.
+
+                        </div>
+
+                    </div>
+
+
+                    <div class="chat-input">
+
+                        <input
+                            id="aiQuestion"
+                            class="input"
+                            placeholder="Ask something..."
+                            onkeydown="if(event.key === 'Enter') askAI()"
+                        >
+
+                        <button class="action-btn primary"
+                                onclick="askAI()">
+                            Ask AI
+                        </button>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- REPORTS -->
+
+        <section id="reports"
+                 class="section">
+
+            <div class="topbar">
+
+                <div class="title">
+
+                    <h1>Security Reports</h1>
+
+                    <p>
+                        Current network monitoring report
+                    </p>
+
+                </div>
+
+                <button class="action-btn primary"
+                        onclick="loadReport()">
+                    Refresh Report
+                </button>
+
+            </div>
+
+
+            <div class="panel">
+
+                <div class="report-grid">
+
+                    <div class="report-item">
+                        <span>Generated At</span>
+                        <strong id="reportTime">-</strong>
+                    </div>
+
+                    <div class="report-item">
+                        <span>Bandwidth</span>
+                        <strong id="reportBandwidth">-</strong>
+                    </div>
+
+                    <div class="report-item">
+                        <span>Packets / Sec</span>
+                        <strong id="reportPackets">-</strong>
+                    </div>
+
+                    <div class="report-item">
+                        <span>Devices</span>
+                        <strong id="reportDevices">-</strong>
+                    </div>
+
+                    <div class="report-item">
+                        <span>Active Threats</span>
+                        <strong id="reportThreats">-</strong>
+                    </div>
+
+                    <div class="report-item">
+                        <span>AI Risk</span>
+                        <strong id="reportRisk">-</strong>
+                    </div>
+
+                    <div class="report-item">
+                        <span>Health</span>
+                        <strong id="reportHealth">-</strong>
+                    </div>
+
+                    <div class="report-item">
+                        <span>AI Status</span>
+                        <strong id="reportAI">-</strong>
+                    </div>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- SETTINGS -->
+
+        <section id="settings"
+                 class="section">
+
+            <div class="topbar">
+
+                <div class="title">
+
+                    <h1>Settings</h1>
+
+                    <p>
+                        NetShield AI configuration
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <div class="panel">
+
+                <div class="report-item">
+
+                    <span>Monitoring Status</span>
+
+                    <strong style="color:#42e8a7;">
+                        Active
+                    </strong>
+
+                </div>
+
+                <br>
+
+                <div class="report-item">
+
+                    <span>AI Engine</span>
+
+                    <strong>
+                        """
+
+# Add AI status dynamically to HTML
+HTML += "Isolation Forest" if AI_AVAILABLE else "Fallback Detection"
+
+HTML += """
+                    </strong>
+
+                </div>
+
+                <br>
+
+                <div class="report-item">
+
+                    <span>Purpose</span>
+
+                    <strong>
+                        Network Security Monitoring
+                    </strong>
+
+                </div>
+
+                <br>
+
+                <div class="report-item">
+
+                    <span>Simulation Mode</span>
+
+                    <strong id="simulationStatus">
+                        OFF
+                    </strong>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <div class="footer-note">
+            NetShield AI • AI-Powered Network Security Monitoring System
+        </div>
+
+    </main>
 
 </div>
 
 
-<div class="main">
+<!-- DEVICE MODAL -->
 
+<div class="modal"
+     id="deviceModal">
 
-<div class="topbar">
+    <div class="modal-box">
 
-    <div class="title">
+        <div class="modal-header">
 
-        <h1>
-            Network Intelligence Center
-        </h1>
+            <h2 id="modalTitle">
+                Add Device
+            </h2>
 
-        <p>
-            AI-powered real-time network monitoring
-        </p>
-
-    </div>
-
-    <div class="live">
-
-        <div class="dot"></div>
-
-        LIVE MONITORING
-
-    </div>
-
-</div>
-
-
-<!-- =====================================================
-DASHBOARD
-===================================================== -->
-
-<div
-id="dashboard"
-class="section active">
-
-
-<div class="cards">
-
-    <div class="card">
-
-        <div class="card-label">
-            BANDWIDTH
-        </div>
-
-        <div
-        class="card-value blue"
-        id="bandwidth">
-        0 Mbps
-        </div>
-
-    </div>
-
-
-    <div class="card">
-
-        <div class="card-label">
-            PACKETS / SEC
-        </div>
-
-        <div
-        class="card-value purple"
-        id="packets">
-        0
-        </div>
-
-    </div>
-
-
-    <div class="card">
-
-        <div class="card-label">
-            DEVICES
-        </div>
-
-        <div
-        class="card-value green"
-        id="deviceCount">
-        0
-        </div>
-
-    </div>
-
-
-    <div class="card">
-
-        <div class="card-label">
-            ACTIVE THREATS
-        </div>
-
-        <div
-        class="card-value red"
-        id="threatCount">
-        0
-        </div>
-
-    </div>
-
-
-    <div class="card">
-
-        <div class="card-label">
-            AI RISK SCORE
-        </div>
-
-        <div
-        class="card-value yellow"
-        id="risk">
-        0/100
-        </div>
-
-    </div>
-
-</div>
-
-
-<div class="grid">
-
-
-<div class="panel">
-
-    <div class="panel-head">
-
-        <h2>
-            Live Network Activity
-        </h2>
-
-        <span
-        class="small"
-        id="updateTime">
-        updating...
-        </span>
-
-    </div>
-
-    <canvas id="networkChart"></canvas>
-
-</div>
-
-
-<div class="panel">
-
-    <div class="panel-head">
-
-        <h2>
-            Network Health
-        </h2>
-
-    </div>
-
-    <div class="health">
-
-        <div
-        class="health-ring"
-        id="healthRing">
-
-            <span id="healthScore">
-                0
-            </span>
-
-        </div>
-
-        <h3 id="healthText">
-            Checking...
-        </h3>
-
-        <p class="small">
-            AI-based network risk analysis
-        </p>
-
-    </div>
-
-</div>
-
-</div>
-
-
-<div class="panel">
-
-    <div class="panel-head">
-
-        <h2>
-            Quick Actions
-        </h2>
-
-        <span class="small">
-            Safe demonstration controls
-        </span>
-
-    </div>
-
-    <button
-    class="btn btn-primary"
-    onclick="openDeviceModal()">
-        + Add Device
-    </button>
-
-    <button
-    class="btn btn-danger"
-    onclick="simulateThreat()">
-        ⚠ Run AI Threat Simulation
-    </button>
-
-    <button
-    class="btn btn-green"
-    onclick="showQR()">
-        ◉ QR Access
-    </button>
-
-</div>
-
-
-</div>
-
-
-<!-- =====================================================
-DEVICES
-===================================================== -->
-
-<div
-id="devices"
-class="section">
-
-<div class="panel">
-
-    <div class="panel-head">
-
-        <h2>
-            Device Management
-        </h2>
-
-        <div>
-
-            <input
-            class="search"
-            id="deviceSearch"
-            placeholder="Search device..."
-            onkeyup="loadDevices()">
-
-            <button
-            class="btn btn-primary"
-            onclick="openDeviceModal()">
-            + Add Device
+            <button class="close"
+                    onclick="closeDeviceModal()">
+                ×
             </button>
 
         </div>
 
-    </div>
+
+        <input type="hidden"
+               id="editId">
 
 
-    <div class="table-wrap">
+        <div class="field">
 
-    <table>
+            <label>
+                Device Name
+            </label>
 
-        <thead>
+            <input
+                id="deviceName"
+                class="input"
+                placeholder="Example: Office Laptop"
+            >
 
-            <tr>
-
-                <th>ID</th>
-                <th>DEVICE</th>
-                <th>IP ADDRESS</th>
-                <th>TYPE</th>
-                <th>STATUS</th>
-                <th>RISK</th>
-                <th>ACTIONS</th>
-
-            </tr>
-
-        </thead>
-
-        <tbody
-        id="deviceTable">
-        </tbody>
-
-    </table>
-
-    </div>
-
-</div>
-
-</div>
+        </div>
 
 
-<!-- =====================================================
-THREATS
-===================================================== -->
+        <div class="field">
 
-<div
-id="threats"
-class="section">
+            <label>
+                IP Address
+            </label>
 
-<div class="panel">
+            <input
+                id="deviceIP"
+                class="input"
+                placeholder="192.168.1.20"
+            >
 
-    <div class="panel-head">
+        </div>
 
-        <h2>
-            AI Threat Center
-        </h2>
 
-        <button
-        class="btn btn-danger"
-        onclick="simulateThreat()">
-        + Simulate Safe Threat
+        <div class="field">
+
+            <label>
+                Device Type
+            </label>
+
+            <select
+                id="deviceType"
+                class="input">
+
+                <option>Laptop</option>
+                <option>Computer</option>
+                <option>Router</option>
+                <option>Mobile</option>
+                <option>Server</option>
+                <option>Other</option>
+
+            </select>
+
+        </div>
+
+
+        <button class="action-btn primary"
+                onclick="saveDevice()"
+                style="width:100%;">
+
+            Save Device
+
         </button>
 
     </div>
 
-    <div id="threatList">
+</div>
 
-        <p class="small">
-            No threat records yet.
+
+<!-- QR MODAL -->
+
+<div class="modal"
+     id="qrModal">
+
+    <div class="modal-box">
+
+        <div class="modal-header">
+
+            <h2>
+                QR Network Access
+            </h2>
+
+            <button class="close"
+                    onclick="closeQR()">
+                ×
+            </button>
+
+        </div>
+
+        <img
+            id="qrImage"
+            class="qr-image"
+            alt="Network QR Code"
+        >
+
+        <div
+            id="qrUrl"
+            class="url-box">
+        </div>
+
+        <p style="
+            color:#747e9c;
+            text-align:center;
+            font-size:11px;
+            margin-top:12px;
+        ">
+            Phone and computer should be connected
+            to the same Wi-Fi network.
         </p>
 
     </div>
-
-</div>
-
-</div>
-
-
-<!-- =====================================================
-AI ASSISTANT
-===================================================== -->
-
-<div
-id="assistant"
-class="section">
-
-<div class="panel">
-
-    <h2>
-        ✦ NetShield AI Assistant
-    </h2>
-
-    <p
-    class="small"
-    style="margin-top:6px">
-
-        Ask about network health,
-        bandwidth, devices or threats.
-
-    </p>
-
-
-    <div class="assistant">
-
-        <input
-        id="aiQuestion"
-        placeholder="Example: Is my network healthy?">
-
-        <button
-        class="btn btn-primary"
-        onclick="askAI()">
-        Ask AI
-        </button>
-
-    </div>
-
-
-    <div
-    class="ai-answer"
-    id="aiAnswer">
-
-        AI Assistant is ready.
-
-    </div>
-
-</div>
-
-</div>
-
-
-<!-- =====================================================
-REPORTS
-===================================================== -->
-
-<div
-id="reports"
-class="section">
-
-<div class="panel">
-
-    <div class="panel-head">
-
-        <h2>
-            Network Report
-        </h2>
-
-        <button
-        class="btn btn-primary"
-        onclick="loadReport()">
-        Generate Report
-        </button>
-
-    </div>
-
-    <div id="reportBox">
-
-        <p class="small">
-            Click Generate Report.
-        </p>
-
-    </div>
-
-</div>
-
-</div>
-
-
-<!-- =====================================================
-SETTINGS
-===================================================== -->
-
-<div
-id="settings"
-class="section">
-
-<div class="panel">
-
-    <h2>
-        Settings
-    </h2>
-
-    <br>
-
-    <p class="small">
-        Monitoring Status
-    </p>
-
-    <br>
-
-    <button
-    class="btn btn-green"
-    onclick="alert('Real-time monitoring is active.')">
-
-        ● Monitoring Active
-
-    </button>
-
-    <br><br>
-
-    <p class="small">
-
-        NetShield AI is designed for
-        authorized networks only.
-
-    </p>
-
-</div>
-
-</div>
-
-
-</div>
-
-
-<!-- =====================================================
-DEVICE MODAL
-===================================================== -->
-
-<div
-class="modal"
-id="deviceModal">
-
-<div class="modal-box">
-
-    <h2 id="modalTitle">
-        Add Device
-    </h2>
-
-    <input
-    class="input"
-    id="deviceName"
-    placeholder="Device name">
-
-    <input
-    class="input"
-    id="deviceIP"
-    placeholder="IP address">
-
-    <input
-    class="input"
-    id="deviceType"
-    placeholder="Device type">
-
-    <input
-    type="hidden"
-    id="editId">
-
-    <button
-    class="btn btn-primary"
-    onclick="saveDevice()">
-    Save Device
-    </button>
-
-    <button
-    class="btn btn-dark"
-    onclick="closeDeviceModal()">
-    Cancel
-    </button>
-
-</div>
-
-</div>
-
-
-<!-- =====================================================
-QR MODAL
-===================================================== -->
-
-<div
-class="modal"
-id="qrModal">
-
-<div class="modal-box qr-box">
-
-    <h2>
-        Scan to Access NetShield AI
-    </h2>
-
-    <br>
-
-    <img
-    id="qrImage"
-    src="">
-
-    <br><br>
-
-    <p
-    class="small"
-    id="qrURL">
-    </p>
-
-    <br>
-
-    <button
-    class="btn btn-dark"
-    onclick="closeQR()">
-    Close
-    </button>
-
-</div>
 
 </div>
 
 
 <script>
 
-let chart;
 
-let labels = [];
-
-let bandwidthData = [];
-
-
-// =====================================================
+// =========================================================
 // SECTION NAVIGATION
-// =====================================================
+// =========================================================
 
-function showSection(id,button){
+function showSection(sectionId, button = null) {
 
-    document
-    .querySelectorAll(".section")
-    .forEach(
-        s => s.classList.remove("active")
-    );
+    document.querySelectorAll(".section")
+        .forEach(section => {
+            section.classList.remove("active");
+        });
 
-    document
-    .getElementById(id)
-    .classList.add("active");
+    const section =
+        document.getElementById(sectionId);
 
-
-    document
-    .querySelectorAll(".nav button")
-    .forEach(
-        b => b.classList.remove("active")
-    );
-
-    button.classList.add("active");
-
-
-    if(id === "devices"){
-        loadDevices();
+    if (section) {
+        section.classList.add("active");
     }
 
-    if(id === "threats"){
+    document.querySelectorAll(".nav-btn")
+        .forEach(btn => {
+            btn.classList.remove("active");
+        });
+
+    if (button) {
+        button.classList.add("active");
+    }
+
+    if (sectionId === "threats") {
         loadThreats();
     }
 
+    if (sectionId === "reports") {
+        loadReport();
+    }
 }
 
 
-// =====================================================
+// =========================================================
 // CHART
-// =====================================================
+// =========================================================
 
-function createChart(){
+let networkChart = null;
 
-    const ctx =
-    document
-    .getElementById("networkChart")
-    .getContext("2d");
+const chartLabels = [];
+const chartBandwidth = [];
+const chartPackets = [];
 
 
-    chart = new Chart(
-        ctx,
-        {
-            type:"line",
+function createChart() {
 
-            data:{
-                labels:labels,
+    const canvas =
+        document.getElementById("networkChart");
 
-                datasets:[
+    if (!canvas) {
+        return;
+    }
 
-                    {
-                        label:"Bandwidth Mbps",
+    const ctx = canvas.getContext("2d");
 
-                        data:bandwidthData,
+    networkChart = new Chart(ctx, {
 
-                        borderColor:"#38dfff",
+        type: "line",
 
-                        backgroundColor:
-                        "rgba(56,223,255,.08)",
+        data: {
 
-                        fill:true,
+            labels: chartLabels,
 
-                        tension:.4
+            datasets: [
+
+                {
+                    label: "Bandwidth Mbps",
+                    data: chartBandwidth,
+                    borderWidth: 2,
+                    tension: 0.35,
+                    fill: false
+                },
+
+                {
+                    label: "Packets / Sec",
+                    data: chartPackets,
+                    borderWidth: 2,
+                    tension: 0.35,
+                    fill: false
+                }
+
+            ]
+
+        },
+
+        options: {
+
+            responsive: true,
+
+            maintainAspectRatio: false,
+
+            plugins: {
+                legend: {
+                    labels: {
+                        color: "#9aa4c2"
                     }
-
-                ]
+                }
             },
 
-            options:{
+            scales: {
 
-                responsive:true,
-
-                plugins:{
-                    legend:{
-                        labels:{
-                            color:"#9ca5c2"
-                        }
+                x: {
+                    ticks: {
+                        color: "#6e7896"
+                    },
+                    grid: {
+                        color: "rgba(100,110,150,0.08)"
                     }
                 },
 
-                scales:{
-
-                    x:{
-                        ticks:{
-                            color:"#737d9b"
-                        },
-
-                        grid:{
-                            color:
-                            "rgba(255,255,255,.04)"
-                        }
+                y: {
+                    beginAtZero: true,
+                    ticks: {
+                        color: "#6e7896"
                     },
-
-                    y:{
-                        ticks:{
-                            color:"#737d9b"
-                        },
-
-                        grid:{
-                            color:
-                            "rgba(255,255,255,.04)"
-                        }
+                    grid: {
+                        color: "rgba(100,110,150,0.08)"
                     }
-
                 }
 
             }
-        }
-    );
-
-}
-
-
-// =====================================================
-// DASHBOARD UPDATE
-// =====================================================
-
-async function updateDashboard(){
-
-    try{
-
-        const response =
-        await fetch(
-            "/api/dashboard"
-        );
-
-        const data =
-        await response.json();
-
-
-        document
-        .getElementById("bandwidth")
-        .innerText =
-        data.network.mbps +
-        " Mbps";
-
-
-        document
-        .getElementById("packets")
-        .innerText =
-        Math.round(
-            data.network.packets
-        );
-
-
-        document
-        .getElementById("deviceCount")
-        .innerText =
-        data.devices;
-
-
-        document
-        .getElementById("threatCount")
-        .innerText =
-        data.active_threats;
-
-
-        document
-        .getElementById("risk")
-        .innerText =
-        data.risk +
-        "/100";
-
-
-        document
-        .getElementById("healthScore")
-        .innerText =
-        100 - data.risk;
-
-
-        document
-        .getElementById("healthText")
-        .innerText =
-        data.health;
-
-
-        document
-        .getElementById("updateTime")
-        .innerText =
-        "Updated " +
-        data.time;
-
-
-        labels.push(
-            data.time
-        );
-
-        bandwidthData.push(
-            data.network.mbps
-        );
-
-
-        if(labels.length > 20){
-
-            labels.shift();
-            bandwidthData.shift();
 
         }
-
-
-        if(chart){
-
-            chart.data.labels =
-            labels;
-
-            chart.data.datasets[0].data =
-            bandwidthData;
-
-            chart.update();
-
-        }
-
-    }
-    catch(error){
-
-        console.log(error);
-
-    }
-
-}
-
-
-// =====================================================
-// DEVICE LOAD
-// =====================================================
-
-async function loadDevices(){
-
-    const response =
-    await fetch(
-        "/api/devices"
-    );
-
-    const devices =
-    await response.json();
-
-
-    const search =
-    document
-    .getElementById("deviceSearch")
-    ?.value
-    .toLowerCase() || "";
-
-
-    const table =
-    document
-    .getElementById("deviceTable");
-
-
-    table.innerHTML = "";
-
-
-    devices
-
-    .filter(
-        d =>
-        d.name.toLowerCase()
-        .includes(search)
-        ||
-        d.ip.toLowerCase()
-        .includes(search)
-    )
-
-    .forEach(d => {
-
-        const row =
-        document.createElement("tr");
-
-
-        row.innerHTML = `
-
-            <td>${d.id}</td>
-
-            <td>${d.name}</td>
-
-            <td>
-                ${d.ip}
-            </td>
-
-            <td>
-                <span class="badge">
-                    ${d.type}
-                </span>
-            </td>
-
-            <td class="online">
-                ● ${d.status}
-            </td>
-
-            <td class="${
-                d.risk > 50
-                ? 'risk-high'
-                : 'risk-low'
-            }">
-
-                ${d.risk}%
-
-            </td>
-
-            <td>
-
-                <button
-                class="action-btn"
-                onclick="editDevice(
-                    ${d.id},
-                    '${escapeText(d.name)}',
-                    '${escapeText(d.ip)}',
-                    '${escapeText(d.type)}'
-                )">
-
-                    Edit
-
-                </button>
-
-                <button
-                class="action-btn"
-                onclick="deleteDevice(${d.id})">
-
-                    Delete
-
-                </button>
-
-            </td>
-
-        `;
-
-        table.appendChild(row);
 
     });
 
 }
 
 
-function escapeText(text){
+// =========================================================
+// DASHBOARD UPDATE
+// =========================================================
 
-    return text
-    .replace(/'/g,"\\'")
-    .replace(/"/g,'&quot;');
+async function updateDashboard() {
+
+    try {
+
+        const response =
+            await fetch("/api/dashboard");
+
+        const data =
+            await response.json();
+
+
+        document.getElementById("bandwidth")
+            .textContent =
+            data.bandwidth.toFixed(2);
+
+
+        document.getElementById("packets")
+            .textContent =
+            data.packets.toFixed(0);
+
+
+        document.getElementById("deviceCount")
+            .textContent =
+            data.devices;
+
+
+        document.getElementById("threatCount")
+            .textContent =
+            data.threats;
+
+
+        document.getElementById("risk")
+            .textContent =
+            data.risk + "%";
+
+
+        document.getElementById("healthNumber")
+            .textContent =
+            data.risk + "%";
+
+
+        document.getElementById("healthText")
+            .textContent =
+            data.health;
+
+
+        const simulationStatus =
+            document.getElementById("simulationStatus");
+
+        if (simulationStatus) {
+
+            simulationStatus.textContent =
+                data.simulation
+                    ? "ON"
+                    : "OFF";
+
+            simulationStatus.style.color =
+                data.simulation
+                    ? "#ff6b7a"
+                    : "#42e8a7";
+        }
+
+
+        // Health ring
+        const safeRisk =
+            Math.max(0, Math.min(data.risk, 100));
+
+        const healthy =
+            100 - safeRisk;
+
+        const degrees =
+            healthy * 3.6;
+
+        document.getElementById("healthRing")
+            .style.background =
+            `conic-gradient(
+                #42e8a7 0deg,
+                #42e8a7 ${degrees}deg,
+                #26304e ${degrees}deg,
+                #26304e 360deg
+            )`;
+
+
+        // Chart
+        if (networkChart) {
+
+            const now =
+                new Date().toLocaleTimeString();
+
+            chartLabels.push(now);
+            chartBandwidth.push(data.bandwidth);
+            chartPackets.push(data.packets);
+
+            if (chartLabels.length > 20) {
+                chartLabels.shift();
+                chartBandwidth.shift();
+                chartPackets.shift();
+            }
+
+            networkChart.update();
+        }
+
+
+    } catch (error) {
+
+        console.log(
+            "Dashboard update error:",
+            error
+        );
+
+    }
 
 }
 
 
-// =====================================================
+// =========================================================
+// DEVICES
+// =========================================================
+
+async function loadDevices() {
+
+    try {
+
+        const response =
+            await fetch("/api/devices");
+
+        const devices =
+            await response.json();
+
+        const search =
+            document.getElementById("deviceSearch");
+
+        const searchText =
+            search
+                ? search.value.toLowerCase()
+                : "";
+
+        const table =
+            document.getElementById("deviceTable");
+
+        table.innerHTML = "";
+
+
+        devices
+            .filter(device => {
+
+                const combined =
+                    (
+                        device.name +
+                        " " +
+                        device.ip +
+                        " " +
+                        device.type
+                    ).toLowerCase();
+
+                return combined.includes(searchText);
+
+            })
+            .forEach(device => {
+
+                const row =
+                    document.createElement("tr");
+
+
+                const nameCell =
+                    document.createElement("td");
+
+                nameCell.textContent =
+                    device.name;
+
+
+                const ipCell =
+                    document.createElement("td");
+
+                ipCell.textContent =
+                    device.ip;
+
+
+                const typeCell =
+                    document.createElement("td");
+
+                typeCell.textContent =
+                    device.type;
+
+
+                const statusCell =
+                    document.createElement("td");
+
+                const statusBadge =
+                    document.createElement("span");
+
+                statusBadge.className =
+                    "badge online";
+
+                statusBadge.textContent =
+                    device.status;
+
+                statusCell.appendChild(
+                    statusBadge
+                );
+
+
+                const riskCell =
+                    document.createElement("td");
+
+                riskCell.textContent =
+                    device.risk + "%";
+
+
+                const actionCell =
+                    document.createElement("td");
+
+
+                const editButton =
+                    document.createElement("button");
+
+                editButton.className =
+                    "small-btn";
+
+                editButton.textContent =
+                    "Edit";
+
+                editButton.onclick =
+                    function () {
+                        editDevice(
+                            device.id,
+                            device.name,
+                            device.ip,
+                            device.type
+                        );
+                    };
+
+
+                const deleteButton =
+                    document.createElement("button");
+
+                deleteButton.className =
+                    "small-btn";
+
+                deleteButton.textContent =
+                    "Delete";
+
+                deleteButton.onclick =
+                    function () {
+                        deleteDevice(device.id);
+                    };
+
+
+                actionCell.appendChild(
+                    editButton
+                );
+
+                actionCell.appendChild(
+                    deleteButton
+                );
+
+
+                row.appendChild(nameCell);
+                row.appendChild(ipCell);
+                row.appendChild(typeCell);
+                row.appendChild(statusCell);
+                row.appendChild(riskCell);
+                row.appendChild(actionCell);
+
+                table.appendChild(row);
+
+            });
+
+
+    } catch (error) {
+
+        console.log(
+            "Device loading error:",
+            error
+        );
+
+    }
+
+}
+
+
+// =========================================================
 // DEVICE MODAL
-// =====================================================
+// =========================================================
 
-function openDeviceModal(){
+function openDeviceModal() {
 
-    document
-    .getElementById("modalTitle")
-    .innerText =
-    "Add Device";
+    document.getElementById("deviceModal")
+        .style.display = "flex";
 
+    document.getElementById("modalTitle")
+        .textContent = "Add Device";
 
-    document
-    .getElementById("deviceName")
-    .value = "";
+    document.getElementById("editId")
+        .value = "";
 
+    document.getElementById("deviceName")
+        .value = "";
 
-    document
-    .getElementById("deviceIP")
-    .value = "";
+    document.getElementById("deviceIP")
+        .value = "";
 
-
-    document
-    .getElementById("deviceType")
-    .value = "";
-
-
-    document
-    .getElementById("editId")
-    .value = "";
-
-
-    document
-    .getElementById("deviceModal")
-    .style.display =
-    "flex";
-
+    document.getElementById("deviceType")
+        .value = "Computer";
 }
 
 
-function closeDeviceModal(){
+function closeDeviceModal() {
 
-    document
-    .getElementById("deviceModal")
-    .style.display =
-    "none";
-
+    document.getElementById("deviceModal")
+        .style.display = "none";
 }
 
 
@@ -2325,531 +2452,663 @@ function editDevice(
     name,
     ip,
     type
-){
+) {
 
-    document
-    .getElementById("modalTitle")
-    .innerText =
-    "Edit Device";
+    document.getElementById("deviceModal")
+        .style.display = "flex";
 
+    document.getElementById("modalTitle")
+        .textContent = "Edit Device";
 
-    document
-    .getElementById("deviceName")
-    .value =
-    name;
+    document.getElementById("editId")
+        .value = id;
 
+    document.getElementById("deviceName")
+        .value = name;
 
-    document
-    .getElementById("deviceIP")
-    .value =
-    ip;
+    document.getElementById("deviceIP")
+        .value = ip;
 
-
-    document
-    .getElementById("deviceType")
-    .value =
-    type;
-
-
-    document
-    .getElementById("editId")
-    .value =
-    id;
-
-
-    document
-    .getElementById("deviceModal")
-    .style.display =
-    "flex";
-
+    document.getElementById("deviceType")
+        .value = type;
 }
 
 
-async function saveDevice(){
+// =========================================================
+// SAVE DEVICE
+// =========================================================
+
+async function saveDevice() {
+
+    const id =
+        document.getElementById("editId").value;
 
     const name =
-    document
-    .getElementById("deviceName")
-    .value;
+        document.getElementById("deviceName").value.trim();
 
     const ip =
-    document
-    .getElementById("deviceIP")
-    .value;
+        document.getElementById("deviceIP").value.trim();
 
     const type =
-    document
-    .getElementById("deviceType")
-    .value;
-
-    const editId =
-    document
-    .getElementById("editId")
-    .value;
+        document.getElementById("deviceType").value;
 
 
-    if(!name || !ip){
+    if (!name || !ip) {
 
         alert(
-            "Please enter device name and IP."
+            "Please enter device name and IP address."
         );
 
         return;
     }
 
 
-    if(editId){
+    try {
 
-        await fetch(
-            "/api/devices/edit/" +
-            editId,
-            {
-                method:"PUT",
+        let response;
 
-                headers:{
-                    "Content-Type":
-                    "application/json"
-                },
 
-                body:JSON.stringify({
-                    name:name,
-                    ip:ip,
-                    type:type
-                })
-            }
+        if (id) {
+
+            response =
+                await fetch(
+                    `/api/devices/edit/${id}`,
+                    {
+                        method: "PUT",
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
+                        body: JSON.stringify({
+                            name: name,
+                            ip: ip,
+                            type: type
+                        })
+                    }
+                );
+
+        } else {
+
+            response =
+                await fetch(
+                    "/api/devices/add",
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
+                        body: JSON.stringify({
+                            name: name,
+                            ip: ip,
+                            type: type
+                        })
+                    }
+                );
+
+        }
+
+
+        const result =
+            await response.json();
+
+
+        if (!response.ok) {
+
+            alert(
+                result.message ||
+                "Something went wrong."
+            );
+
+            return;
+        }
+
+
+        closeDeviceModal();
+
+        loadDevices();
+
+        alert(
+            id
+                ? "Device updated successfully."
+                : "Device added successfully."
+        );
+
+
+    } catch (error) {
+
+        alert(
+            "Could not connect to the server."
         );
 
     }
-    else{
-
-        await fetch(
-            "/api/devices/add",
-            {
-                method:"POST",
-
-                headers:{
-                    "Content-Type":
-                    "application/json"
-                },
-
-                body:JSON.stringify({
-                    name:name,
-                    ip:ip,
-                    type:type
-                })
-            }
-        );
-
-    }
-
-
-    closeDeviceModal();
-
-    loadDevices();
-
-    updateDashboard();
 
 }
 
 
-// =====================================================
+// =========================================================
 // DELETE DEVICE
-// =====================================================
+// =========================================================
 
-async function deleteDevice(id){
+async function deleteDevice(id) {
 
-    if(
-        !confirm(
-            "Delete this device?"
-        )
-    ){
+    const confirmed =
+        confirm(
+            "Are you sure you want to delete this device?"
+        );
 
+    if (!confirmed) {
         return;
-
     }
 
 
-    await fetch(
-        "/api/devices/delete/" +
-        id,
-        {
-            method:"DELETE"
+    try {
+
+        const response =
+            await fetch(
+                `/api/devices/delete/${id}`,
+                {
+                    method: "DELETE"
+                }
+            );
+
+
+        const result =
+            await response.json();
+
+
+        if (result.success) {
+
+            loadDevices();
+
+            alert(
+                "Device deleted successfully."
+            );
+
+        } else {
+
+            alert(
+                result.message ||
+                "Could not delete device."
+            );
+
         }
-    );
 
+    } catch (error) {
 
-    loadDevices();
+        alert(
+            "Server connection error."
+        );
 
-    updateDashboard();
+    }
 
 }
 
 
-// =====================================================
+// =========================================================
 // THREAT SIMULATION
-// =====================================================
+// =========================================================
 
-async function simulateThreat(){
+async function simulateThreat() {
 
-    await fetch(
-        "/api/simulate_threat",
-        {
-            method:"POST"
+    try {
+
+        const response =
+            await fetch(
+                "/api/simulate_threat",
+                {
+                    method: "POST"
+                }
+            );
+
+
+        const result =
+            await response.json();
+
+
+        if (result.success) {
+
+            alert(
+                "AI threat simulation started."
+            );
+
+            loadThreats();
+
+            updateDashboard();
+
         }
-    );
 
+    } catch (error) {
 
-    alert(
-        "AI threat simulation created successfully."
-    );
+        alert(
+            "Could not start simulation."
+        );
 
-
-    updateDashboard();
-
-    loadThreats();
+    }
 
 }
 
 
-// =====================================================
+// =========================================================
 // LOAD THREATS
-// =====================================================
+// =========================================================
 
-async function loadThreats(){
+async function loadThreats() {
 
-    const response =
-    await fetch(
-        "/api/threats"
-    );
+    try {
 
-    const threats =
-    await response.json();
+        const response =
+            await fetch("/api/threats");
 
+        const threats =
+            await response.json();
 
-    const list =
-    document
-    .getElementById("threatList");
+        const table =
+            document.getElementById("threatTable");
 
-
-    list.innerHTML = "";
+        table.innerHTML = "";
 
 
-    if(threats.length === 0){
+        threats
+            .slice()
+            .reverse()
+            .forEach(threat => {
 
-        list.innerHTML =
-        `
-        <p class="small">
-            No threats detected.
-        </p>
-        `;
-
-        return;
-
-    }
+                const row =
+                    document.createElement("tr");
 
 
-    threats.forEach(
-        threat => {
+                const threatCell =
+                    document.createElement("td");
 
-            const div =
-            document.createElement("div");
-
-
-            div.className =
-            "alert";
+                threatCell.textContent =
+                    threat.type;
 
 
-            div.innerHTML = `
+                const severityCell =
+                    document.createElement("td");
 
-                <strong>
-                    ${threat.type}
-                </strong>
+                const severity =
+                    document.createElement("span");
 
-                <br>
+                severity.className =
+                    "badge " +
+                    (
+                        threat.severity === "Critical" ||
+                        threat.severity === "High"
+                            ? "high"
+                            : "medium"
+                    );
 
-                <span class="small">
+                severity.textContent =
+                    threat.severity;
 
-                    Severity:
-                    ${threat.severity}
+                severityCell.appendChild(
+                    severity
+                );
 
-                    |
-                    Source:
-                    ${threat.source}
 
-                    |
-                    ${threat.time}
+                const sourceCell =
+                    document.createElement("td");
 
-                </span>
+                sourceCell.textContent =
+                    threat.source;
 
-                <br><br>
 
-                <span class="badge">
-                    ${threat.status}
-                </span>
+                const timeCell =
+                    document.createElement("td");
 
-                ${
-                    threat.status === "Active"
-                    ?
-                    `
-                    <button
-                    class="btn btn-green"
-                    style="margin-left:10px"
-                    onclick="resolveThreat(
-                        ${threat.id}
-                    )">
+                timeCell.textContent =
+                    threat.time;
 
-                        Resolve
 
-                    </button>
-                    `
-                    :
-                    ""
+                const statusCell =
+                    document.createElement("td");
+
+                const status =
+                    document.createElement("span");
+
+                status.className =
+                    "badge " +
+                    (
+                        threat.status === "Resolved"
+                            ? "resolved"
+                            : "high"
+                    );
+
+                status.textContent =
+                    threat.status;
+
+                statusCell.appendChild(
+                    status
+                );
+
+
+                const actionCell =
+                    document.createElement("td");
+
+
+                if (threat.status === "Active") {
+
+                    const resolveButton =
+                        document.createElement("button");
+
+                    resolveButton.className =
+                        "small-btn";
+
+                    resolveButton.textContent =
+                        "Resolve";
+
+                    resolveButton.onclick =
+                        function () {
+                            resolveThreat(
+                                threat.id
+                            );
+                        };
+
+                    actionCell.appendChild(
+                        resolveButton
+                    );
+
+                } else {
+
+                    actionCell.textContent =
+                        "Completed";
+
                 }
 
-            `;
+
+                row.appendChild(threatCell);
+                row.appendChild(severityCell);
+                row.appendChild(sourceCell);
+                row.appendChild(timeCell);
+                row.appendChild(statusCell);
+                row.appendChild(actionCell);
+
+                table.appendChild(row);
+
+            });
 
 
-            list.appendChild(div);
+    } catch (error) {
 
-        }
-    );
+        console.log(
+            "Threat loading error:",
+            error
+        );
+
+    }
 
 }
 
 
-// =====================================================
+// =========================================================
 // RESOLVE THREAT
-// =====================================================
+// =========================================================
 
-async function resolveThreat(id){
+async function resolveThreat(id) {
 
-    await fetch(
-        "/api/threats/resolve/" +
-        id,
-        {
-            method:"POST"
+    try {
+
+        const response =
+            await fetch(
+                `/api/threats/resolve/${id}`,
+                {
+                    method: "POST"
+                }
+            );
+
+
+        const result =
+            await response.json();
+
+
+        if (result.success) {
+
+            loadThreats();
+
+            updateDashboard();
+
         }
-    );
 
+    } catch (error) {
 
-    loadThreats();
+        alert(
+            "Could not resolve threat."
+        );
 
-    updateDashboard();
+    }
 
 }
 
 
-// =====================================================
+// =========================================================
 // AI ASSISTANT
-// =====================================================
+// =========================================================
 
-async function askAI(){
+async function askAI() {
+
+    const input =
+        document.getElementById("aiQuestion");
 
     const question =
-    document
-    .getElementById("aiQuestion")
-    .value;
+        input.value.trim();
 
 
-    if(!question){
-
-        alert(
-            "Please enter a question."
-        );
-
+    if (!question) {
         return;
-
     }
 
 
-    const response =
-    await fetch(
-        "/api/assistant",
-        {
-            method:"POST",
+    const chat =
+        document.getElementById("chat");
 
-            headers:{
-                "Content-Type":
-                "application/json"
-            },
 
-            body:JSON.stringify({
-                question:question
-            })
+    const userMessage =
+        document.createElement("div");
+
+    userMessage.className =
+        "message user-message";
+
+    userMessage.textContent =
+        "You: " + question;
+
+    chat.appendChild(
+        userMessage
+    );
+
+
+    input.value = "";
+
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/assistant",
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+                    body: JSON.stringify({
+                        question: question
+                    })
+                }
+            );
+
+
+        const result =
+            await response.json();
+
+
+        const aiMessage =
+            document.createElement("div");
+
+        aiMessage.className =
+            "message ai-message";
+
+        aiMessage.textContent =
+            "NetShield AI: " +
+            result.answer;
+
+        chat.appendChild(
+            aiMessage
+        );
+
+
+        chat.scrollTop =
+            chat.scrollHeight;
+
+
+    } catch (error) {
+
+        const errorMessage =
+            document.createElement("div");
+
+        errorMessage.className =
+            "message ai-message";
+
+        errorMessage.textContent =
+            "NetShield AI: Server connection error.";
+
+        chat.appendChild(
+            errorMessage
+        );
+
+    }
+
+}
+
+
+// =========================================================
+// QR CODE
+// =========================================================
+
+async function showQR() {
+
+    try {
+
+        const response =
+            await fetch("/api/qr");
+
+        const result =
+            await response.json();
+
+
+        if (!result.success) {
+
+            alert(
+                result.message ||
+                "QR generation failed."
+            );
+
+            return;
         }
-    );
 
 
-    const data =
-    await response.json();
+        document.getElementById("qrImage")
+            .src = result.image;
 
 
-    document
-    .getElementById("aiAnswer")
-    .innerText =
-    data.answer;
-
-}
+        document.getElementById("qrUrl")
+            .textContent = result.url;
 
 
-// =====================================================
-// QR ACCESS
-// =====================================================
-
-async function showQR(){
-
-    const response =
-    await fetch(
-        "/api/qr"
-    );
+        document.getElementById("qrModal")
+            .style.display = "flex";
 
 
-    const data =
-    await response.json();
-
-
-    if(!data.success){
+    } catch (error) {
 
         alert(
-            "QR generation failed."
+            "Could not generate QR code."
         );
-
-        return;
 
     }
 
-
-    document
-    .getElementById("qrImage")
-    .src =
-    data.image;
-
-
-    document
-    .getElementById("qrURL")
-    .innerText =
-    data.url;
-
-
-    document
-    .getElementById("qrModal")
-    .style.display =
-    "flex";
-
 }
 
 
-function closeQR(){
+function closeQR() {
 
-    document
-    .getElementById("qrModal")
-    .style.display =
-    "none";
-
+    document.getElementById("qrModal")
+        .style.display = "none";
 }
 
 
-// =====================================================
+// =========================================================
 // REPORT
-// =====================================================
+// =========================================================
 
-async function loadReport(){
+async function loadReport() {
 
-    const response =
-    await fetch(
-        "/api/report"
-    );
+    try {
+
+        const response =
+            await fetch("/api/report");
+
+        const data =
+            await response.json();
 
 
-    const data =
-    await response.json();
+        document.getElementById("reportTime")
+            .textContent =
+            data.generated_at;
 
 
-    document
-    .getElementById("reportBox")
-    .innerHTML = `
+        document.getElementById("reportBandwidth")
+            .textContent =
+            data.bandwidth.toFixed(2) +
+            " Mbps";
 
-        <div class="cards">
 
-            <div class="card">
-                <div class="card-label">
-                    DEVICES
-                </div>
+        document.getElementById("reportPackets")
+            .textContent =
+            data.packets.toFixed(0);
 
-                <div class="card-value green">
-                    ${data.devices}
-                </div>
-            </div>
 
-            <div class="card">
-                <div class="card-label">
-                    THREATS
-                </div>
+        document.getElementById("reportDevices")
+            .textContent =
+            data.devices;
 
-                <div class="card-value red">
-                    ${data.threats}
-                </div>
-            </div>
 
-            <div class="card">
-                <div class="card-label">
-                    NETWORK
-                </div>
+        document.getElementById("reportThreats")
+            .textContent =
+            data.active_threats;
 
-                <div class="card-value blue">
-                    ${data.network_speed}
-                    Mbps
-                </div>
-            </div>
 
-            <div class="card">
-                <div class="card-label">
-                    AI RISK
-                </div>
+        document.getElementById("reportRisk")
+            .textContent =
+            data.risk + "%";
 
-                <div class="card-value yellow">
-                    ${data.risk}/100
-                </div>
-            </div>
 
-        </div>
+        document.getElementById("reportHealth")
+            .textContent =
+            data.health;
 
-        <p class="small">
-            Generated:
-            ${data.generated_at}
-        </p>
 
-        <br>
+        document.getElementById("reportAI")
+            .textContent =
+            data.ai_status;
 
-        <p>
-            Network Health:
-            <strong>
-                ${data.health}
-            </strong>
-        </p>
 
-        <br>
+    } catch (error) {
 
-        <p>
-            Active Threats:
-            ${data.active_threats}
-        </p>
+        console.log(
+            "Report error:",
+            error
+        );
 
-        <br>
-
-        <p>
-            Active Connections:
-            ${data.connections}
-        </p>
-
-    `;
+    }
 
 }
 
 
-// =====================================================
-// START
-// =====================================================
+// =========================================================
+// INITIAL STARTUP
+// =========================================================
 
 createChart();
 
@@ -2857,10 +3116,31 @@ updateDashboard();
 
 loadDevices();
 
+loadThreats();
+
+loadReport();
+
+
+// Update every 2 seconds
 setInterval(
     updateDashboard,
     2000
 );
+
+
+// Update threat list every 4 seconds
+setInterval(
+    loadThreats,
+    4000
+);
+
+
+// Update devices every 5 seconds
+setInterval(
+    loadDevices,
+    5000
+);
+
 
 </script>
 
@@ -2872,15 +3152,12 @@ setInterval(
 
 
 # =========================================================
-# FLASK ROUTE
+# HOME ROUTE
 # =========================================================
 
 @app.route("/")
 def home():
-
-    return render_template_string(
-        HTML
-    )
+    return render_template_string(HTML)
 
 
 # =========================================================
@@ -2889,27 +3166,25 @@ def home():
 
 if __name__ == "__main__":
 
+    initialize_ai()
+
+    local_ip = get_local_ip()
+
     print()
     print("=" * 60)
-    print("       NETSHIELD AI")
-    print("       AI-Powered Network Intelligence")
+    print("             NETSHIELD AI")
     print("=" * 60)
     print()
-    print(
-        "Local URL : http://127.0.0.1:5000"
-    )
-    print(
-        "LAN URL   : http://" +
-        get_local_ip() +
-        ":5000"
-    )
+    print("Local URL : http://127.0.0.1:5000")
+    print(f"Network URL: http://{local_ip}:5000")
     print()
-    print("Press CTRL+C to stop server.")
+    print("Keep this terminal open while using the project.")
+    print("Press CTRL+C to stop the server.")
+    print()
     print("=" * 60)
-    print()
 
     app.run(
         host="0.0.0.0",
-        port=5000,
+        port=int(os.environ.get("PORT", 5000)),
         debug=False
     )
